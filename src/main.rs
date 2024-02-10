@@ -25,14 +25,20 @@ fn main() {
             "server" => {
                 tcp_server::serve(address).unwrap_or_else(|e| error!("{}", e));
             }
-            "client" => {}
+            "client" => {
+                tcp_client::connect(address).unwrap_or_else(|e| error!("{}", e));
+            }
             _ => {
                 missing_role();
             }
         },
         "udp" => match role {
-            "server" => {}
-            "client" => {}
+            "server" => {
+                udp_server::serve(address).unwrap_or_else(|e| error!("{}", e));
+            }
+            "client" => {
+                udp_client::communicate(address).unwrap_or_else(|e| error!("{}", e));
+            }
             _ => {
                 missing_role();
             }
