@@ -1,5 +1,5 @@
 use log::{error, info};
-use pnet::{datalink::{self, EtherType}, packet::{ipv4, ipv6}};
+use pnet::{datalink::{self, EtherType}, packet::{ip::IpNextHeaderProtocols, ipv4, ipv6, Packet}};
 
 fn main() {
     env::set_var("RUST_LOG", "debug");
@@ -46,3 +46,53 @@ fn main() {
 }
 
 /** Ipv4パケットを構築次のレイヤーのハンドラを呼び出す */
+
+fn ipv4_handler(ethernet: &EthernetPacket) {
+    if let Some(packet) = Ipv4Packet::new(ethernet.payload()) {
+        match packet.get_next_level_protocol() {
+            IpNextHeaderProtocols::Tcp => {
+                tcp_handler(&packet);
+            }
+            IpNextHeaderProtocols::Udp => {
+                udp_handler(&packet);
+            }
+            _ => {
+                info!("Not a TCP or UDP packet");
+            }
+        }
+    }
+}
+
+fn ipv6_handler(ethernet: &EthernetPacket) {
+    if let Some(packet) = Ipv6Packet::new(ethernet.payload()) {
+        match packet.get_next_header() {
+            IpNextHeaderProtocols::Tcp => {
+                tcp_handler(&packet);;
+            }
+            IpNextHeaderProtocols::Udp => {
+                udp_handler(&packet);
+            }
+            _ => {
+                info!("Not a TCP or UDP packet");
+            }
+        }
+    }
+}
+
+/// TCPパケット構築
+/// @param packet
+fn tcp_handler(packet: &GettableEndPoints) {
+    let tcp = TcpPacket::new(packet.get_payload());
+    if let Some(tcp) = tcp {
+        print_packet_info(packet, &tcp, "TCP");
+    }
+}
+
+/// UDPパケット構築
+/// @param packet
+fn udp_handler(packet: &GettableEndPoints) {
+    let udp = UdpPacket::new(packet.get_payload());
+    if let Some(udp) = udp {
+        print_packet_info(packet, &udp, "UDP");
+    }
+}
