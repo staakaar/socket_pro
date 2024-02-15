@@ -54,76 +54,80 @@ fn main() {
             },
         }
     };
-
     //トランスポート層のチャンネル開く
     let (mut ts, mut tr) = transport::transport_channel(1024, TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp))).expect("Failed to open channel")
 
-    // パケットの生成
-    fn build_packet(packet_info: &PacketInfo) -> [u8; TCP_SIZE] {
-        let mut tcp_buffer = [0u8; TCP_SIZE];
-        let mut tcp_header = MutableTcpPacket::new(&mut tcp_buffer[..]).unwrap();
-        tcp_header.set_source(packet_info.my_port);
+    rayon::join(
+        || send_packet(&mut ts, &packet_info),
+        || receive_packets(&mut tr, &packet_info),
+    )
+}
 
-        tcp_header.set_data_offset(5);
-        tcp_header.set_flags(packet_info.scan_type as u16);
-        
-        let checksum = tcp::ipv4_checksum(&tcp_header.to_immutable(), &packet_info.my_ipaddr, &packet_info.target_ipaddr);
-        tcp_header.set_checksum(checksum);
-        
-        tcp_buffer
-    }
+// パケットの生成
+fn build_packet(packet_info: &PacketInfo) -> [u8; TCP_SIZE] {
+    let mut tcp_buffer = [0u8; TCP_SIZE];
+    let mut tcp_header = MutableTcpPacket::new(&mut tcp_buffer[..]).unwrap();
+    tcp_header.set_source(packet_info.my_port);
 
-    // TCPヘッダの宛先ポート情報を書き換える
-    // チェックサムを計算し直す必要がある
-    fn reregister_destination_port(target: u16, tcp_header: &mut MutableTcpPacket, packet_info: &PacketInfo) {
-        tcp_header.set_destination(target);
-        let checksum = tcp::ipv4_checksum(&tcp_header.to_immutable(), &packet_info.my_ipaddr, &packet_info.target_ipaddr);
-        tcp_header.set_checksum(checksum);
-    }
+    tcp_header.set_data_offset(5);
+    tcp_header.set_flags(packet_info.scan_type as u16);
+    
+    let checksum = tcp::ipv4_checksum(&tcp_header.to_immutable(), &packet_info.my_ipaddr, &packet_info.target_ipaddr);
+    tcp_header.set_checksum(checksum);
+    
+    tcp_buffer
+}
 
-    fn receive_packets(tr: &mut TransportReceiver, packet_info: &PacketInfo) -> Result<(), failure::Error> {
-        let mut reply_ports = Vec::new();
-        let mut packet_iter = transport::tcp_packet_iter(tr);
+// TCPヘッダの宛先ポート情報を書き換える
+// チェックサムを計算し直す必要がある
+fn reregister_destination_port(target: u16, tcp_header: &mut MutableTcpPacket, packet_info: &PacketInfo) {
+    tcp_header.set_destination(target);
+    let checksum = tcp::ipv4_checksum(&tcp_header.to_immutable(), &packet_info.my_ipaddr, &packet_info.target_ipaddr);
+    tcp_header.set_checksum(checksum);
+}
 
-        loop {
-            let tcp_packet = match packet_iter.next() {
-                Ok((tcp_packet, _)) => {
-                    if tcp_packet.get_destination() == packet_info.my_port {
-                        tcp_packet
-                    } else {
-                        continue;
-                    }
-                }
-                Err(_) => continue,
-            };
+fn receive_packets(tr: &mut TransportReceiver, packet_info: &PacketInfo) -> Result<(), failure::Error> {
+    let mut reply_ports = Vec::new();
+    let mut packet_iter = transport::tcp_packet_iter(tr);
 
-            let target_port = tcp_packet.get_source();
-            match packet_info.scan_type {
-                ScanType::Syn => {
-                    if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK {
-                        println!("port {} is open", target_port);
-                    }
-                }
-                ScanType::Fin | ScanType::Xmas | ScanType::Null => {
-                    reply_ports.push(target_port);
+    loop {
+        let tcp_packet = match packet_iter.next() {
+            Ok((tcp_packet, _)) => {
+                if tcp_packet.get_destination() == packet_info.my_port {
+                    tcp_packet
+                } else {
+                    continue;
                 }
             }
+            Err(_) => continue,
+        };
 
-            if target_port != packet_info.maximum_port {
-                continue;
-            }
-
-            match packet_info.scan_type {
-                ScanType::Fin | ScanType::Xmas | ScanType::Null => {
-                    for i in 1..= packet_info.maximum_port {
-                        if reply_ports.iter().find(|&&x| x == i).is_none() {
-                            println!("pport {} is open", i);
-                        }
-                    }
+        let target_port = tcp_packet.get_source();
+        match packet_info.scan_type {
+            ScanType::Syn => {
+                if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK {
+                    println!("port {} is open", target_port);
                 }
-                _ => {}
             }
-            return Ok(())
+            ScanType::Fin | ScanType::Xmas | ScanType::Null => {
+                reply_ports.push(target_port);
+            }
         }
+
+        if target_port != packet_info.maximum_port {
+            continue;
+        }
+
+        match packet_info.scan_type {
+            ScanType::Fin | ScanType::Xmas | ScanType::Null => {
+                for i in 1..= packet_info.maximum_port {
+                    if reply_ports.iter().find(|&&x| x == i).is_none() {
+                        println!("pport {} is open", i);
+                    }
+                }
+            }
+            _ => {}
+        }
+        return Ok(())
     }
 }
