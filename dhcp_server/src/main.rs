@@ -89,3 +89,25 @@ fn make_dhcp_packet(
     dhcp_packet.set_option(&mut cursor, Code:: as u8, 0, None);
     Ok(dhcp_packet)
 }
+
+fn dhcp_handler(packet: &DhcpPacket, soc: &UdpSocket, dhcp_server: Arc<DhcpServer>) -> Result<(), failure::Error> {
+    let message = packet.get_option(Code::MessageType as u8).ok_or_else(|| failure::err_msg("spacified option was not found"))?;
+    let message_type = message[0];
+    let transaction_id = BigEndian::read_u32(packet.get_xid());
+    let client_macaddr = packet.get_chaddr();
+
+    match message_type {
+        DHCPDISCOVER => dhcp_discover_message_handler(transaction_id, dhcp_server, &packet, soc),
+        DHCPREQUEST => match packet.get_option(Code::ServerIdentifier as u8) {
+            Some(server_id) => dhcp_request_message_handler_responded_to_offer(transaction_id, dhcp_server, &packet, client_macaddr, soc, server_id),
+            None => dhcp_request_message_handler_to_reallocate(transaction_id, dhcp_server, &packet, client_macaddr, soc),
+        },
+        DHCPRELEASE => {
+            dhcp_release_message_handler(transaction_id, dhcp_server, &packet, client_macaddr)
+        }
+        _ => {
+            let msg = format!("{:x}: received unimplemented message, message_type:{}", transaction_id, message_type);
+            Err(failure::err_msg(msg))
+        }
+    }
+}
