@@ -111,3 +111,51 @@ fn dhcp_handler(packet: &DhcpPacket, soc: &UdpSocket, dhcp_server: Arc<DhcpServe
         }
     }
 }
+
+fn dhcp_discover_message_handler(xid: u32, dhcp_server: Arc<DhcpServer>, received_packet: &DhcpPacket, soc: &UdpSocket) -> Result<(), failure::Error> {
+    info!("{:x}: received DHCPDISCOVER", xid);
+    let ip_to_be_leased = select_lease_ip(&dhcp_server, &received_packet)?;
+    let dhcp_packet = make_dhcp_packet(&received, &dhcp_server, DHCPOFFER, ip_to_be_leased)?;
+    util::send_dhcp_brodcast_response(soc, dhcp_packet.get_buffer())?;
+    info!("{:x}: sent DHCPOFFER", xid);
+    Ok(())
+}
+
+fn select_lease_ip(dhcp_server: &Arc<DhcpServer>, received_packet: &DhcpPacket) -> Result<Ipv4Addr, failure::Error> {
+    {
+        let con = dhcp_server.db_connection.lock().unwrap();
+        if let Some(ip_from_used) = database::select_entry(&con, received_packet.get_chaddr())? {
+            // IPアドレスが重複していないか
+            // .envに記載されたネットワークアドレスの変更があった時のために、現在のネットワークに含まれているかを合わせて確認する
+            if dhcp_server.network_addr.contains(ip_from_used) && util::is_ipaddr_available(ip_from_used).is_ok() {
+                return Ok(ip_from_used);
+            }
+        }
+    }
+
+    // Request Ip Addrオプションがあり、利用可能ならばそのIPアドレスを返却
+    if let Some(ip_to_be_leased) = obtain_avaliable_ip_from_requested_option(dhcp_server, &received_packet) {
+        return Ok(ip_to_be_leased)
+    }
+
+    // アドレスプールからの取得
+    while let Some(ip_addr) = dhcp_server.pick_avaliable_ip() {
+        if util::is_ipaddr_avaliable(ip_addr).is_ok() {
+            return Ok(ip_addr);
+        }
+    }
+    // 利用できるIPアドレスが取得できなかった場合
+    Err(failure::err_msg("Cloud not obtain avaliable ip address."))
+}
+
+fn obtain_avaliable_ip_from_requested_option(dhcp_server &Arc<DhcpServer>, received_packet: &DhcpPacket) -> Option<Ipv4Addr> {
+    let ip = received_packet.get_option(Code::RequestedIpAddress as u8)?;
+
+    let request_ip = util::u8_to_ipv$addr(&ip)?;
+    let ip_from_pool = dhcp_server.pick_avaliable_ip(request_ip)?;
+
+    if util::is_ipaddr_available(ip_from_pool).is_ok() {
+        return Some(requested_ip);
+    }
+    None
+}
