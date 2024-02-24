@@ -159,3 +159,46 @@ fn obtain_avaliable_ip_from_requested_option(dhcp_server &Arc<DhcpServer>, recei
     }
     None
 }
+
+fn dhcp_request_message_handler_to_reallocate(xid: u32, dhcp_server: Arc<DhcpServer>, received_packet: &DhcpPacket, client_macaddr: MacAddr, soc: &UdpSocket) -> Result<(), failure::Error> {
+    info!("{:x}: received DHCPREQUEST without server_id", xid);
+
+    if let Some(requested_ip) = received_packet.get_option(Code::RequestedIpAddress as u8) {
+        debug!("client is in INIT-REBOOT");
+        //クライアントが以前割り当てられたIPアドレスを記憶していて先起動状態にある時
+        let requested_ip = util::u8_to_ipv4addr(&requested_ip).ok_or_else(|| failure::err_msg("Failed to convert ip addr"))?;
+        let con = dhcp_server.db_connection.lock().unwrap();
+        match database::select_entry(&con, client_macaddr)? {
+            Some(ip) => {
+                if ip == requested_ip && dhcp_server.network_addr.contains(ip) {
+                    //以前割り当てたIPアドレスと要求されたIPアドレスが一致されており、ネットワークに含まれている時はACKを返す
+                    let dhcp_packet = make_dhcp_packet(&received_packet, &dhcp_server, DHCPACK, ip)?;
+                    util::send_dhcp_brodcast_response(soc, dhcp_packet.get_buffer())?;
+                    info!("{:x}: sent DHCPACK", xid);
+                    Ok(())
+                } else {
+                    //不適切なIPアドレスが要求されるとNAKを返す
+                    let dhcp_packet = make_dhcp_packet(&received_packet, &dhcp_server, DHCPNAK, "0.0.0.0".parse()?)?;
+                    util::send_dhcp_brodcast_response(soc, dhcp_packet.get_buffer())?;
+                    info!("{:x}: sent DHCPACK", xid);
+                    Ok(())
+                }
+            }
+            None => {
+                Ok(())
+            }
+        }
+    } else {
+        debug!("client is in RENEWING or REBINDING");
+        //リース延長要求、リース切れによる再要求
+        //本来はこれらの状態で処理を分けるべきだが、簡略化のため同じ処理をする
+        let ip_from_client = received_packet.get_ciaddr();
+        if !dhcp_server.network_addr.contains(ip_from_client) {
+            return Err(failure::err_msg("Invalid ciaddr. Mismatched network address."));
+        }
+        let dhcp_packet = make_dhcp_packet(&received_packet, &dhcp_server, DHCPACK, received_packet.get_ciaddr())?;
+        util::send_dhcp_brodcast_response(soc, dhcp_packet.get_buffer())?;
+        info!("{:x}: sent DHCPACK", xid);
+        Ok(())
+    }
+}
